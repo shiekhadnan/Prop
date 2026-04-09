@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & Auth ────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  password      String
+  role          String    @default("member")
+  avatar        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  proposals     Proposal[]
+  reviews       Review[]
+  comments      Comment[]
+}
+
+// ─── Clients ─────────────────────────────────────────────
+
+model Client {
+  id              String   @id @default(cuid())
+  name            String
+  industry        String?
+  contactName     String?
+  contactEmail    String?
+  contactPhone    String?
+  website         String?
+  logo            String?
+  notes           String?
+  documentStyle   String?
+  diagramStyle    String?
+  templateId      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  proposals       Proposal[]
+  templates       Template[]
+}
+
+// ─── Templates ───────────────────────────────────────────
+
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  content     String
+  type        String   @default("proposal")
+  clientId    String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  client      Client?   @relation(fields: [clientId], references: [id])
+  proposals   Proposal[]
+}
+
+// ─── Proposals ───────────────────────────────────────────
+
+model Proposal {
+  id           String   @id @default(cuid())
+  title        String
+  description  String?
+  content      String?
+  status       String   @default("draft")
+  priority     String   @default("medium")
+  dueDate      DateTime?
+  version      Int      @default(1)
+  totalValue   Float?
+  clientId     String
+  templateId   String?
+  authorId     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  client       Client    @relation(fields: [clientId], references: [id])
+  template     Template? @relation(fields: [templateId], references: [id])
+  author       User      @relation(fields: [authorId], references: [id])
+
+  sections     Section[]
+  reviews      Review[]
+  comments     Comment[]
+  versions     ProposalVersion[]
+  attachments  Attachment[]
+}
+
+// ─── Sections ────────────────────────────────────────────
+
+model Section {
+  id          String   @id @default(cuid())
+  title       String
+  content     String?
+  order       Int
+  type        String   @default("text")
+  diagramData String?
+  metadata    String?
+  proposalId  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+}
+
+// ─── Reviews ─────────────────────────────────────────────
+
+model Review {
+  id          String   @id @default(cuid())
+  status      String   @default("pending")
+  decision    String?
+  summary     String?
+  score       Int?
+  proposalId  String
+  reviewerId  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  reviewer    User     @relation(fields: [reviewerId], references: [id])
+  comments    Comment[]
+}
+
+// ─── Comments ────────────────────────────────────────────
+
+model Comment {
+  id          String   @id @default(cuid())
+  content     String
+  type        String   @default("general")
+  sectionRef  String?
+  proposalId  String
+  reviewId    String?
+  authorId    String
+  createdAt   DateTime @default(now())
+
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  review      Review?  @relation(fields: [reviewId], references: [id])
+  author      User     @relation(fields: [authorId], references: [id])
+}
+
+// ─── Proposal Versions ──────────────────────────────────
+
+model ProposalVersion {
+  id          String   @id @default(cuid())
+  version     Int
+  content     String
+  changeNote  String?
+  proposalId  String
+  createdAt   DateTime @default(now())
+
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+}
+
+// ─── Attachments ─────────────────────────────────────────
+
+model Attachment {
+  id          String   @id @default(cuid())
+  name        String
+  path        String
+  size        Int
+  mimeType    String
+  proposalId  String
+  createdAt   DateTime @default(now())
+
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+}
+
+// ─── Reference Library ───────────────────────────────────
+
+model Reference {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  content     String
+  type        String
+  tags        String?
+  filePath    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

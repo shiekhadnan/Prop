@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --no-turbopack)",
+      "Read(//e/claude test/**)",
+      "Bash(npx create-next-app@latest propflow --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --no-turbopack)",
+      "Bash(mv \"E:/claude test/propflow\"/* \"E:/claude test/propflow\"/.[!.]* \"E:/claude test/Prop/\")",
+      "Bash(rm -rf \"E:/claude test/propflow\")",
+      "Bash(npm install:*)",
+      "Bash(npx shadcn@latest init -d --style default --base-color neutral)",
+      "Bash(npx shadcn@latest init -d)"
+    ]
+  }
+}
