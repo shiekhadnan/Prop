@@ -3,6 +3,7 @@ import Link from "next/link";
 import { format } from "date-fns";
 import {
   FileText,
+  Binoculars,
   Buildings,
   ClockCounterClockwise,
   CheckCircle,
@@ -51,10 +52,11 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  const [totalProposals, activeClients, inReviewCount, approvedCount, recentProposals] =
+  const [totalProposals, activeClients, activeOpportunities, inReviewCount, approvedCount, recentProposals, latestOpportunities] =
     await Promise.all([
       prisma.proposal.count(),
       prisma.client.count(),
+      prisma.opportunity.count({ where: { status: "active" } }),
       prisma.proposal.count({ where: { status: "in_review" } }),
       prisma.proposal.count({ where: { status: "approved" } }),
       prisma.proposal.findMany({
@@ -63,6 +65,11 @@ export default async function DashboardPage() {
         include: {
           client: { select: { name: true } },
         },
+      }),
+      prisma.opportunity.findMany({
+        where: { status: "active" },
+        take: 3,
+        orderBy: { createdAt: "desc" },
       }),
     ]);
 
@@ -73,6 +80,13 @@ export default async function DashboardPage() {
       icon: FileText,
       bg: "bg-blue-50",
       iconColor: "text-blue-600",
+    },
+    {
+      label: "Opportunities",
+      value: activeOpportunities,
+      icon: Binoculars,
+      bg: "bg-indigo-50",
+      iconColor: "text-indigo-600",
     },
     {
       label: "Active Clients",
@@ -110,7 +124,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {stats.map((stat) => (
           <Card key={stat.label}>
             <CardContent className="flex items-center gap-4 p-6">
@@ -201,6 +215,53 @@ export default async function DashboardPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Latest Opportunities */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Latest Opportunities</CardTitle>
+          <Link href="/opportunities" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+            View all
+            <ArrowRight size={16} className="ml-1" />
+          </Link>
+        </CardHeader>
+        <CardContent>
+          {latestOpportunities.length === 0 ? (
+            <p className="py-8 text-center text-muted-foreground">
+              No active opportunities found.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {latestOpportunities.map((opp: any) => (
+                <div
+                  key={opp.id}
+                  className="flex items-center justify-between rounded-lg border p-4"
+                >
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      href={`/opportunities/${opp.id}`}
+                      className="font-medium hover:underline"
+                    >
+                      {opp.title}
+                    </Link>
+                    <p className="text-sm text-muted-foreground">{opp.agency}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {opp.setAside && (
+                      <Badge variant="secondary">{opp.setAside}</Badge>
+                    )}
+                    {opp.deadline && (
+                      <span className="whitespace-nowrap text-sm text-muted-foreground">
+                        Due {format(new Date(opp.deadline), "MMM d, yyyy")}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Gear, User, Palette } from "@phosphor-icons/react";
+import { Gear, User, Palette, Key, Eye, EyeSlash } from "@phosphor-icons/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,6 +23,9 @@ export default function SettingsPage() {
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [autoSave, setAutoSave] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [samApiKey, setSamApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [savingApiKey, setSavingApiKey] = useState(false);
 
   useEffect(() => {
     fetch("/api/user/me")
@@ -143,6 +146,66 @@ export default function SettingsPage() {
               </p>
             </div>
             <Switch checked={autoSave} onCheckedChange={setAutoSave} />
+          </div>
+        </CardContent>
+      </Card>
+      {/* API Keys */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Key size={20} weight="duotone" />
+            API Keys
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="sam-api-key">SAM.gov API Key</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  id="sam-api-key"
+                  type={showApiKey ? "text" : "password"}
+                  value={samApiKey}
+                  onChange={(e) => setSamApiKey(e.target.value)}
+                  placeholder="Enter your SAM.gov API key"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showApiKey ? <EyeSlash size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <Button
+                onClick={async () => {
+                  setSavingApiKey(true);
+                  try {
+                    await fetch("/api/settings/api-keys", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ samApiKey }),
+                    });
+                  } finally {
+                    setSavingApiKey(false);
+                  }
+                }}
+                disabled={savingApiKey}
+              >
+                {savingApiKey ? "Saving..." : "Save"}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Get your free API key from{" "}
+              <a
+                href="https://sam.gov/profile"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline hover:no-underline"
+              >
+                sam.gov/profile
+              </a>
+            </p>
           </div>
         </CardContent>
       </Card>

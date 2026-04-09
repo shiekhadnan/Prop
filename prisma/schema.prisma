@@ -42,8 +42,13 @@ model Client {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  naicsCodes      String?   // comma-separated NAICS codes for matching
+  setAsideTypes   String?   // comma-separated: SB, 8A, HZC, SDVOSB, WOSB
+  capabilities    String?   // keywords for opportunity matching
+
   proposals       Proposal[]
   templates       Template[]
+  opportunities   Opportunity[]
 }
 
 // ─── Templates ───────────────────────────────────────────
@@ -183,4 +188,53 @@ model Reference {
   filePath    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// ─── Opportunities (from SAM.gov / external) ─────────────
+
+model Opportunity {
+  id              String    @id @default(cuid())
+  externalId      String    @unique // SAM.gov noticeId or external ID
+  title           String
+  solicitationNum String?
+  department      String?
+  agency          String?
+  office          String?
+  type            String?   // presolicitation, solicitation, award, etc.
+  setAside        String?   // SB, 8A, HZC, SDVOSB, WOSB, etc.
+  naicsCode       String?
+  classificationCode String?
+  description     String?
+  postedDate      DateTime?
+  responseDeadline DateTime?
+  archiveDate     DateTime?
+  placeOfPerformance String?
+  pointOfContact  String?   // JSON: name, email, phone
+  resourceLinks   String?   // JSON: array of links to full solicitation
+  estimatedValue  Float?
+  awardDate       DateTime?
+  awardee         String?
+  awardAmount     Float?
+  source          String    @default("sam.gov") // sam.gov, grants.gov, sbir, manual
+  status          String    @default("active") // active, archived, saved, dismissed
+  isSaved         Boolean   @default(false)
+  matchScore      Float?    // AI-computed match score for client matching
+  matchedClientId String?
+  notes           String?
+  rawData         String?   // JSON: full API response for reference
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  matchedClient   Client?   @relation(fields: [matchedClientId], references: [id])
+}
+
+// ─── API Settings (store API keys securely) ──────────────
+
+model ApiSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique // e.g., "sam_gov_api_key"
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
