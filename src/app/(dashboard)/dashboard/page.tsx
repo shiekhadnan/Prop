@@ -9,9 +9,11 @@ import {
   CheckCircle,
   Plus,
   ArrowRight,
+  Calendar,
 } from "@phosphor-icons/react/dist/ssr";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { searchSamOpportunities } from "@/lib/sam-gov";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -52,7 +54,7 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  const [totalProposals, activeClients, activeOpportunities, inReviewCount, approvedCount, recentProposals, latestOpportunities] =
+  const [totalProposals, activeClients, activeOpportunities, inReviewCount, approvedCount, recentProposals, latestOpportunities, samResult] =
     await Promise.all([
       prisma.proposal.count(),
       prisma.client.count(),
@@ -71,7 +73,10 @@ export default async function DashboardPage() {
         take: 3,
         orderBy: { createdAt: "desc" },
       }),
+      searchSamOpportunities({ keyword: "", size: 3 }),
     ]);
+
+  const liveOpportunities = samResult.results;
 
   const stats = [
     {
@@ -223,20 +228,31 @@ export default async function DashboardPage() {
       {/* Latest Opportunities */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Latest Opportunities</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle>Latest Opportunities</CardTitle>
+            {liveOpportunities.length > 0 && (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+                </span>
+                Live
+              </span>
+            )}
+          </div>
           <Link href="/opportunities" className={buttonVariants({ variant: "ghost", size: "sm" })}>
             View all
             <ArrowRight size={16} className="ml-1" />
           </Link>
         </CardHeader>
         <CardContent>
-          {latestOpportunities.length === 0 ? (
+          {liveOpportunities.length === 0 && latestOpportunities.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
               No active opportunities found.
             </p>
           ) : (
             <div className="space-y-3">
-              {latestOpportunities.map((opp: any) => (
+              {liveOpportunities.map((opp) => (
                 <div
                   key={opp.id}
                   className="flex items-center justify-between rounded-lg border p-4"
@@ -248,15 +264,21 @@ export default async function DashboardPage() {
                     >
                       {opp.title}
                     </Link>
-                    <p className="text-sm text-muted-foreground">{opp.agency}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {opp.agency ?? opp.department ?? "Unknown agency"}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex shrink-0 items-center gap-3">
+                    {opp.type && (
+                      <Badge variant="outline">{opp.type}</Badge>
+                    )}
                     {opp.setAside && (
                       <Badge variant="secondary">{opp.setAside}</Badge>
                     )}
-                    {opp.deadline && (
-                      <span className="whitespace-nowrap text-sm text-muted-foreground">
-                        Due {format(new Date(opp.deadline), "MMM d, yyyy")}
+                    {opp.responseDeadline && (
+                      <span className="flex items-center gap-1 whitespace-nowrap text-sm text-muted-foreground">
+                        <Calendar size={14} />
+                        {format(new Date(opp.responseDeadline), "MMM d, yyyy")}
                       </span>
                     )}
                   </div>

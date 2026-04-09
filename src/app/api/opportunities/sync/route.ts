@@ -1,39 +1,26 @@
+import { searchSamOpportunities } from "@/lib/sam-gov";
 import { prisma } from "@/lib/db";
-import { searchOpportunities, type MappedOpportunity } from "@/lib/sam-gov";
 import { bestMatchForOpportunity } from "@/lib/opportunity-matcher";
 import { NextRequest, NextResponse } from "next/server";
-
-function formatDate(date: Date): string {
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  const yyyy = date.getFullYear();
-  return `${mm}/${dd}/${yyyy}`;
-}
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
     const keyword: string | undefined = body.keyword ?? undefined;
     const naicsCode: string | undefined = body.naicsCode ?? undefined;
-    const daysBack: number = body.daysBack ?? 7;
-
-    // Calculate date range
-    const now = new Date();
-    const fromDate = new Date(now);
-    fromDate.setDate(fromDate.getDate() - daysBack);
-
-    const postedFrom = formatDate(fromDate);
-    const postedTo = formatDate(now);
+    const size: number = body.size ?? 100;
 
     // Fetch from SAM.gov
-    const result = await searchOpportunities({
+    const result = await searchSamOpportunities({
       keyword,
       naicsCode,
-      postedFrom,
-      postedTo,
-      limit: 100,
-      offset: 0,
+      size: Math.min(500, Math.max(1, size)),
+      index: 0,
     });
+
+    if (result.error) {
+      return NextResponse.json({ error: result.error }, { status: 502 });
+    }
 
     // Fetch all clients for matching
     const clients = await prisma.client.findMany({
@@ -47,36 +34,40 @@ export async function POST(request: NextRequest) {
     });
 
     // Upsert each opportunity
-    let created = 0;
-    let updated = 0;
+    let synced = 0;
 
-    for (const opp of result.opportunities) {
-      if (!opp.externalId) continue;
+    for (const opp of result.results) {
+      if (!opp.id) continue;
 
       // Find best client match
-      const match = clients.length > 0
-        ? bestMatchForOpportunity(opp, clients)
-        : null;
+      const match =
+        clients.length > 0
+          ? bestMatchForOpportunity(
+              {
+                naicsCode: opp.naicsCode,
+                setAside: opp.setAside,
+                title: opp.title,
+                description: opp.description,
+              },
+              clients
+            )
+          : null;
 
       const data: Record<string, unknown> = {
         title: opp.title,
-        solicitationNum: opp.solicitationNum,
+        solicitationNum: opp.solicitationNumber,
         department: opp.department,
         agency: opp.agency,
-        office: opp.office,
         type: opp.type,
         setAside: opp.setAside,
         naicsCode: opp.naicsCode,
-        classificationCode: opp.classificationCode,
         description: opp.description,
-        postedDate: opp.postedDate,
-        responseDeadline: opp.responseDeadline,
-        archiveDate: opp.archiveDate,
+        postedDate: opp.postedDate ? new Date(opp.postedDate) : null,
+        responseDeadline: opp.responseDeadline
+          ? new Date(opp.responseDeadline)
+          : null,
         placeOfPerformance: opp.placeOfPerformance,
-        pointOfContact: opp.pointOfContact,
-        resourceLinks: opp.resourceLinks,
-        source: opp.source,
-        rawData: opp.rawData,
+        source: "sam.gov",
       };
 
       if (match && match.score >= 10) {
@@ -84,33 +75,21 @@ export async function POST(request: NextRequest) {
         data.matchedClientId = match.clientId;
       }
 
-      const existing = await prisma.opportunity.findUnique({
-        where: { externalId: opp.externalId },
+      await prisma.opportunity.upsert({
+        where: { externalId: opp.id },
+        update: data,
+        create: {
+          externalId: opp.id,
+          ...data,
+        } as Parameters<typeof prisma.opportunity.create>[0]["data"],
       });
 
-      if (existing) {
-        await prisma.opportunity.update({
-          where: { externalId: opp.externalId },
-          data,
-        });
-        updated++;
-      } else {
-        await prisma.opportunity.create({
-          data: {
-            externalId: opp.externalId,
-            ...data,
-          } as Parameters<typeof prisma.opportunity.create>[0]["data"],
-        });
-        created++;
-      }
+      synced++;
     }
 
     return NextResponse.json({
-      success: true,
-      fetched: result.opportunities.length,
-      created,
-      updated,
-      totalRecords: result.totalRecords,
+      synced,
+      total: result.total,
     });
   } catch (error) {
     console.error("Opportunity sync failed:", error);

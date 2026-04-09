@@ -1,91 +1,106 @@
-import { prisma } from "@/lib/db";
+// SAM.gov Internal API - No authentication required
+// Search: https://sam.gov/api/prod/sgs/v1/search/
+// Details: https://sam.gov/api/prod/opps/v2/opportunities/{id}
+// Resources: https://sam.gov/api/prod/opps/v3/opportunities/{id}/resources
 
 // ─── Types ───────────────────────────────────────────────
 
 export interface SamSearchParams {
   keyword?: string;
-  postedFrom?: string; // MM/dd/yyyy
-  postedTo?: string;
+  index?: number;
+  size?: number;
   naicsCode?: string;
   typeOfSetAside?: string;
-  ptype?: string; // procurement type
-  limit?: number;
-  offset?: number;
+  postedFrom?: string;
+  postedTo?: string;
+  responseDeadlineFrom?: string;
+  responseDeadlineTo?: string;
+  ptype?: string; // p=presolicitation, o=solicitation, k=combined, r=sources sought, s=special notice, i=sale of surplus, a=award notice
 }
 
-export interface MappedOpportunity {
-  externalId: string;
+export interface SamOpportunity {
+  id: string;
   title: string;
-  solicitationNum: string | null;
+  solicitationNumber: string | null;
   department: string | null;
   agency: string | null;
-  office: string | null;
   type: string | null;
   setAside: string | null;
   naicsCode: string | null;
-  classificationCode: string | null;
   description: string | null;
-  postedDate: Date | null;
-  responseDeadline: Date | null;
-  archiveDate: Date | null;
+  postedDate: string | null;
+  responseDeadline: string | null;
   placeOfPerformance: string | null;
-  pointOfContact: string | null;
-  resourceLinks: string | null;
-  source: string;
-  rawData: string;
 }
 
 export interface SamSearchResult {
-  opportunities: MappedOpportunity[];
-  totalRecords: number;
+  results: SamOpportunity[];
+  total: number;
+  error?: string;
 }
 
-// ─── API Key Resolution ──────────────────────────────────
+// ─── Constants ───────────────────────────────────────────
 
-async function getApiKey(): Promise<string> {
-  // Try DB first
-  try {
-    const setting = await prisma.apiSetting.findUnique({
-      where: { key: "sam_gov_api_key" },
-    });
-    if (setting?.value) return setting.value;
-  } catch {
-    // DB may not be available; fall through to env var
+const SAM_SEARCH_URL = "https://sam.gov/api/prod/sgs/v1/search/";
+const SAM_DETAIL_URL = "https://sam.gov/api/prod/opps/v2/opportunities";
+const SAM_RESOURCES_URL = "https://sam.gov/api/prod/opps/v3/opportunities";
+
+const DEFAULT_HEADERS: HeadersInit = {
+  Accept: "application/json, application/hal+json",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://sam.gov/search/",
+  Origin: "https://sam.gov",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+};
+
+const FETCH_TIMEOUT = 30_000;
+
+// ─── Helpers ─────────────────────────────────────────────
+
+function buildSearchUrl(params: SamSearchParams): string {
+  const page = params.index ?? 0;
+  const size = params.size ?? 25;
+
+  const url = new URL(SAM_SEARCH_URL);
+  url.searchParams.set("random", String(Date.now()));
+  url.searchParams.set("index", "opp");
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("mode", "search");
+  url.searchParams.set("size", String(size));
+  url.searchParams.set("is_active", "true");
+  url.searchParams.set("sort", "-modifiedDate");
+
+  if (params.keyword) {
+    url.searchParams.set("q", params.keyword);
+  }
+  if (params.naicsCode) {
+    url.searchParams.set("naics", params.naicsCode);
+  }
+  if (params.typeOfSetAside) {
+    url.searchParams.set("typeOfSetAside", params.typeOfSetAside);
+  }
+  if (params.ptype) {
+    url.searchParams.set("opp_type", params.ptype);
+  }
+  if (params.postedFrom) {
+    url.searchParams.set("postedFrom", params.postedFrom);
+  }
+  if (params.postedTo) {
+    url.searchParams.set("postedTo", params.postedTo);
+  }
+  if (params.responseDeadlineFrom) {
+    url.searchParams.set("responseDeadlineFrom", params.responseDeadlineFrom);
+  }
+  if (params.responseDeadlineTo) {
+    url.searchParams.set("responseDeadlineTo", params.responseDeadlineTo);
   }
 
-  const envKey = process.env.SAM_GOV_API_KEY;
-  if (envKey) return envKey;
-
-  throw new Error(
-    "SAM.gov API key not configured. Set it in Settings or as SAM_GOV_API_KEY env var."
-  );
+  return url.toString();
 }
 
-// ─── Response Mapping ────────────────────────────────────
-
-function parseDate(value: unknown): Date | null {
-  if (!value || typeof value !== "string") return null;
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function mapOpportunity(raw: Record<string, unknown>): MappedOpportunity {
-  const poc = raw.pointOfContact;
-  const pocJson =
-    poc && Array.isArray(poc) && poc.length > 0
-      ? JSON.stringify(
-          poc.map((c: Record<string, unknown>) => ({
-            name: c.fullName ?? c.name ?? null,
-            email: c.email ?? null,
-            phone: c.phone ?? null,
-          }))
-        )
-      : null;
-
-  const links = raw.resourceLinks;
-  const linksJson =
-    links && Array.isArray(links) ? JSON.stringify(links) : null;
-
+function mapSearchResult(raw: Record<string, unknown>): SamOpportunity {
+  // Place of performance
   const placeRaw = raw.placeOfPerformance as
     | Record<string, unknown>
     | undefined;
@@ -95,101 +110,161 @@ function mapOpportunity(raw: Record<string, unknown>): MappedOpportunity {
         .join(", ") || null
     : null;
 
+  // Type can be a string or an object { code, value }
+  const typeRaw = raw.type as string | Record<string, unknown> | null;
+  const typeStr =
+    typeof typeRaw === "object" && typeRaw
+      ? (typeRaw.value as string) ?? (typeRaw.code as string) ?? null
+      : (typeRaw as string) ?? null;
+
+  // Description can be a string or an array of { content }
+  const descRaw = raw.descriptions as
+    | Array<Record<string, unknown>>
+    | undefined;
+  const description =
+    (raw.description as string) ??
+    (descRaw?.[0]?.content as string) ??
+    null;
+
+  // Organization hierarchy: extract department and agency
+  const orgHierarchy = raw.organizationHierarchy as
+    | Array<Record<string, unknown>>
+    | undefined;
+  const dept =
+    (raw.department as string) ??
+    (orgHierarchy?.find((o) => o.level === 1)?.name as string) ??
+    null;
+  const agency =
+    (raw.subtierAgency as string) ??
+    (raw.agency as string) ??
+    (orgHierarchy?.find((o) => o.level === 2)?.name as string) ??
+    null;
+
   return {
-    externalId: String(raw.noticeId ?? raw.opportunityId ?? ""),
+    id: String(raw.noticeId ?? raw._id ?? raw.opportunityId ?? ""),
     title: String(raw.title ?? ""),
-    solicitationNum: (raw.solicitationNumber as string) ?? null,
-    department: (raw.department as string) ?? (raw.departmentName as string) ?? null,
-    agency: (raw.subtierAgency as string) ?? (raw.agency as string) ?? null,
-    office: (raw.office as string) ?? (raw.officeName as string) ?? null,
-    type: (raw.type as string) ?? (raw.noticeType as string) ?? null,
-    setAside: (raw.typeOfSetAsideDescription as string) ??
-      (raw.typeOfSetAside as string) ?? null,
+    solicitationNumber: (raw.solicitationNumber as string) ?? null,
+    department: dept,
+    agency,
+    type: typeStr,
+    setAside:
+      (raw.typeOfSetAsideDescription as string) ??
+      (raw.typeOfSetAside as string) ??
+      null,
     naicsCode: (raw.naicsCode as string) ?? null,
-    classificationCode: (raw.classificationCode as string) ?? null,
-    description: (raw.description as string) ?? null,
-    postedDate: parseDate(raw.postedDate),
-    responseDeadline: parseDate(raw.responseDeadline ?? raw.responseDate),
-    archiveDate: parseDate(raw.archiveDate),
+    description,
+    postedDate:
+      (raw.postedDate as string) ??
+      (raw.publishDate as string) ??
+      null,
+    responseDeadline:
+      (raw.responseDeadline as string) ??
+      (raw.responseDate as string) ??
+      null,
     placeOfPerformance: place,
-    pointOfContact: pocJson,
-    resourceLinks: linksJson,
-    source: "sam.gov",
-    rawData: JSON.stringify(raw),
   };
 }
 
-// ─── SAM.gov API Calls ──────────────────────────────────
+// ─── API Functions ───────────────────────────────────────
 
-const SAM_BASE_URL = "https://api.sam.gov/opportunities/v2/search";
-
-export async function searchOpportunities(
+export async function searchSamOpportunities(
   params: SamSearchParams
 ): Promise<SamSearchResult> {
-  const apiKey = await getApiKey();
+  try {
+    const url = buildSearchUrl(params);
 
-  const query = new URLSearchParams();
-  query.set("api_key", apiKey);
-  if (params.keyword) query.set("keyword", params.keyword);
-  if (params.postedFrom) query.set("postedFrom", params.postedFrom);
-  if (params.postedTo) query.set("postedTo", params.postedTo);
-  if (params.naicsCode) query.set("naics", params.naicsCode);
-  if (params.typeOfSetAside) query.set("typeOfSetAside", params.typeOfSetAside);
-  if (params.ptype) query.set("ptype", params.ptype);
-  query.set("limit", String(params.limit ?? 25));
-  query.set("offset", String(params.offset ?? 0));
+    const response = await fetch(url, {
+      headers: DEFAULT_HEADERS,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
 
-  const url = `${SAM_BASE_URL}?${query.toString()}`;
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return {
+        results: [],
+        total: 0,
+        error: `SAM.gov API error (${response.status}): ${text || response.statusText}`,
+      };
+    }
 
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
+    const data = await response.json();
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `SAM.gov API error (${response.status}): ${text || response.statusText}`
-    );
+    const rawResults: Record<string, unknown>[] =
+      data?._embedded?.results ?? data?.opportunitiesData ?? [];
+    const total: number =
+      data?.page?.totalElements ?? data?.totalRecords ?? rawResults.length;
+
+    return {
+      results: rawResults.map(mapSearchResult),
+      total,
+    };
+  } catch (error) {
+    return {
+      results: [],
+      total: 0,
+      error: `SAM.gov search failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-
-  const data = await response.json();
-
-  const rawOpportunities: Record<string, unknown>[] =
-    data.opportunitiesData ?? data.opportunities ?? [];
-  const totalRecords: number =
-    data.totalRecords ?? rawOpportunities.length;
-
-  return {
-    opportunities: rawOpportunities.map(mapOpportunity),
-    totalRecords,
-  };
 }
 
-export async function fetchOpportunityDetail(
-  noticeId: string
-): Promise<MappedOpportunity> {
-  const apiKey = await getApiKey();
+export async function fetchSamOpportunityDetail(
+  opportunityId: string
+): Promise<{ data: Record<string, unknown> | null; error?: string }> {
+  try {
+    const url = `${SAM_DETAIL_URL}/${encodeURIComponent(opportunityId)}`;
 
-  const url = `${SAM_BASE_URL}?api_key=${encodeURIComponent(apiKey)}&noticeId=${encodeURIComponent(noticeId)}&limit=1`;
+    const response = await fetch(url, {
+      headers: DEFAULT_HEADERS,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
 
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return {
+        data: null,
+        error: `SAM.gov detail API error (${response.status}): ${text || response.statusText}`,
+      };
+    }
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `SAM.gov API error (${response.status}): ${text || response.statusText}`
-    );
+    const data = await response.json();
+    return { data };
+  } catch (error) {
+    return {
+      data: null,
+      error: `SAM.gov detail fetch failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
+}
 
-  const data = await response.json();
-  const items: Record<string, unknown>[] =
-    data.opportunitiesData ?? data.opportunities ?? [];
+export async function fetchSamResources(
+  opportunityId: string
+): Promise<{ resources: Record<string, unknown>[]; error?: string }> {
+  try {
+    const url = `${SAM_RESOURCES_URL}/${encodeURIComponent(opportunityId)}/resources`;
 
-  if (items.length === 0) {
-    throw new Error(`Opportunity not found: ${noticeId}`);
+    const response = await fetch(url, {
+      headers: DEFAULT_HEADERS,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return {
+        resources: [],
+        error: `SAM.gov resources API error (${response.status}): ${text || response.statusText}`,
+      };
+    }
+
+    const data = await response.json();
+    const resources: Record<string, unknown>[] = Array.isArray(data)
+      ? data
+      : data?.resources ?? data?._embedded?.resources ?? [];
+
+    return { resources };
+  } catch (error) {
+    return {
+      resources: [],
+      error: `SAM.gov resources fetch failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-
-  return mapOpportunity(items[0]);
 }

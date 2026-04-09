@@ -12,7 +12,12 @@ import {
   Buildings,
   Calendar,
   Tag,
-  Star,
+  CurrencyDollar,
+  CaretDown,
+  CaretUp,
+  Trophy,
+  Handshake,
+  FileText,
 } from "@phosphor-icons/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 // ─── Types ───────────────────────────────────────────────
 
-interface OpportunityResult {
+interface SamOpportunity {
   id: string;
   externalId: string;
   title: string;
@@ -42,6 +47,31 @@ interface OpportunityResult {
   postedDate: string | null;
   responseDeadline: string | null;
   estimatedValue: number | null;
+  description: string | null;
+}
+
+interface GrantOpportunity {
+  id: string;
+  title: string;
+  agency: string | null;
+  postDate: string | null;
+  closeDate: string | null;
+  awardFloor: number | null;
+  awardCeiling: number | null;
+  summary: string | null;
+  status: string | null;
+  category: string | null;
+}
+
+interface AwardResult {
+  id: string;
+  recipientName: string | null;
+  agency: string | null;
+  awardAmount: number | null;
+  contractType: string | null;
+  naicsCode: string | null;
+  startDate: string | null;
+  endDate: string | null;
   description: string | null;
 }
 
@@ -58,7 +88,7 @@ interface SavedOpportunity {
 
 // ─── Helpers ─────────────────────────────────────────────
 
-const currencyFormatter = new Intl.NumberFormat("en-US", {
+const currencyFmt = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   minimumFractionDigits: 0,
@@ -77,9 +107,11 @@ const typeColorMap: Record<string, string> = {
   solicitation: "bg-blue-100 text-blue-800 hover:bg-blue-100",
   award: "bg-green-100 text-green-800 hover:bg-green-100",
   combined: "bg-orange-100 text-orange-800 hover:bg-orange-100",
+  sources_sought: "bg-amber-100 text-amber-800 hover:bg-amber-100",
+  special: "bg-slate-100 text-slate-700 hover:bg-slate-100",
 };
 
-function formatDate(dateStr: string | null): string {
+function fmtDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "N/A";
   try {
     return format(new Date(dateStr), "MMM d, yyyy");
@@ -90,10 +122,10 @@ function formatDate(dateStr: string | null): string {
 
 // ─── Loading Skeletons ──────────────────────────────────
 
-function ResultSkeletons() {
+function ResultSkeletons({ count = 6 }: { count?: number }) {
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      {Array.from({ length: 4 }).map((_, i) => (
+      {Array.from({ length: count }).map((_, i) => (
         <Card key={i}>
           <CardHeader className="pb-3">
             <Skeleton className="h-5 w-3/4" />
@@ -114,42 +146,130 @@ function ResultSkeletons() {
   );
 }
 
-// ─── Live Search Tab ────────────────────────────────────
+// ─── Tab Badge ──────────────────────────────────────────
 
-function LiveSearchTab() {
+function TabBadge({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/10 px-1.5 text-xs font-medium text-primary">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+// ─── Collapsible Filter Card ────────────────────────────
+
+function FilterCard({
+  children,
+  title,
+  expanded,
+  onToggle,
+}: {
+  children: React.ReactNode;
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader
+        className="cursor-pointer pb-3 select-none"
+        onClick={onToggle}
+      >
+        <CardTitle className="flex items-center justify-between text-base">
+          <span className="flex items-center gap-2">
+            <Funnel size={18} className="text-muted-foreground" />
+            {title}
+          </span>
+          {expanded ? (
+            <CaretUp size={16} className="text-muted-foreground" />
+          ) : (
+            <CaretDown size={16} className="text-muted-foreground" />
+          )}
+        </CardTitle>
+      </CardHeader>
+      {expanded && <CardContent className="pt-0">{children}</CardContent>}
+    </Card>
+  );
+}
+
+// ─── Tab 1: Contracts (SAM.gov) ─────────────────────────
+
+function ContractsTab({
+  onCountChange,
+}: {
+  onCountChange: (n: number) => void;
+}) {
   const [keyword, setKeyword] = useState("");
   const [naicsCode, setNaicsCode] = useState("");
   const [setAsideType, setSetAsideType] = useState("all");
-  const [postedFrom, setPostedFrom] = useState("");
-  const [postedTo, setPostedTo] = useState("");
-  const [results, setResults] = useState<OpportunityResult[]>([]);
+  const [ptype, setPtype] = useState("all");
+  const [results, setResults] = useState<SamOpportunity[]>([]);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
 
-  const handleSearch = useCallback(async () => {
-    setLoading(true);
-    setSearched(true);
-    try {
-      const params = new URLSearchParams();
-      if (keyword) params.set("keyword", keyword);
-      if (naicsCode) params.set("naicsCode", naicsCode);
-      if (setAsideType !== "all") params.set("setAside", setAsideType);
-      if (postedFrom) params.set("postedFrom", postedFrom);
-      if (postedTo) params.set("postedTo", postedTo);
+  const ptypeMap: Record<string, string> = {
+    presolicitation: "p",
+    solicitation: "o",
+    combined: "k",
+    sources_sought: "r",
+    award: "a",
+    special: "s",
+  };
 
-      const res = await fetch(`/api/opportunities/search?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        setResults(data.opportunities ?? data ?? []);
+  const doSearch = useCallback(
+    async (pageNum: number, append = false) => {
+      setLoading(true);
+      setSearched(true);
+      try {
+        const params = new URLSearchParams();
+        if (keyword) params.set("keyword", keyword);
+        if (naicsCode) params.set("naicsCode", naicsCode);
+        if (setAsideType !== "all") params.set("setAside", setAsideType);
+        if (ptype !== "all") params.set("ptype", ptypeMap[ptype] ?? ptype);
+        params.set("limit", "25");
+        params.set("offset", String(pageNum * 25));
+
+        const res = await fetch(
+          `/api/opportunities/search?${params.toString()}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const opps: SamOpportunity[] = data.results ?? data.data ?? data.opportunities ?? [];
+          const total: number = data.total ?? data.totalRecords ?? opps.length;
+          if (append) {
+            setResults((prev) => [...prev, ...opps]);
+          } else {
+            setResults(opps);
+          }
+          setTotalRecords(total);
+          onCountChange(append ? results.length + opps.length : opps.length);
+        }
+      } catch {
+        // Search failed silently
+      } finally {
+        setLoading(false);
       }
-    } catch {
-      // Search failed silently
-    } finally {
-      setLoading(false);
-    }
-  }, [keyword, naicsCode, setAsideType, postedFrom, postedTo]);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [keyword, naicsCode, setAsideType, ptype]
+  );
+
+  const handleSearch = () => {
+    setPage(0);
+    doSearch(0, false);
+  };
+
+  const handleLoadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    doSearch(next, true);
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -158,8 +278,7 @@ function LiveSearchTab() {
       if (keyword) body.keyword = keyword;
       if (naicsCode) body.naicsCode = naicsCode;
       if (setAsideType !== "all") body.setAside = setAsideType;
-      if (postedFrom) body.postedFrom = postedFrom;
-      if (postedTo) body.postedTo = postedTo;
+      if (ptype !== "all") body.ptype = ptypeMap[ptype] ?? ptype;
 
       await fetch("/api/opportunities/sync", {
         method: "POST",
@@ -188,32 +307,31 @@ function LiveSearchTab() {
 
   return (
     <div className="space-y-6">
-      {/* Search Form */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <MagnifyingGlass size={18} className="text-muted-foreground" />
-            Search Filters
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <FilterCard
+        title="Search Filters"
+        expanded={filtersOpen}
+        onToggle={() => setFiltersOpen(!filtersOpen)}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-2">
-              <Label htmlFor="keyword">Keyword</Label>
+              <Label htmlFor="sam-keyword">Keyword</Label>
               <Input
-                id="keyword"
-                placeholder="e.g. cybersecurity, IT support"
+                id="sam-keyword"
+                placeholder="e.g. cybersecurity, IT modernization"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="naicsCode">NAICS Code</Label>
+              <Label htmlFor="sam-naics">NAICS Code</Label>
               <Input
-                id="naicsCode"
+                id="sam-naics"
                 placeholder="e.g. 541512"
                 value={naicsCode}
                 onChange={(e) => setNaicsCode(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               />
             </div>
             <div className="space-y-2">
@@ -223,12 +341,12 @@ function LiveSearchTab() {
                 onValueChange={(v) => setSetAsideType(v ?? "all")}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="All Types" />
+                  <SelectValue placeholder="All" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
+                  <SelectItem value="all">All</SelectItem>
                   <SelectItem value="SB">Small Business (SB)</SelectItem>
-                  <SelectItem value="8A">8(a) Program</SelectItem>
+                  <SelectItem value="8A">8(a)</SelectItem>
                   <SelectItem value="HZC">HUBZone (HZC)</SelectItem>
                   <SelectItem value="SDVOSB">SDVOSB</SelectItem>
                   <SelectItem value="WOSB">WOSB</SelectItem>
@@ -236,135 +354,157 @@ function LiveSearchTab() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="postedFrom">Posted From</Label>
-              <Input
-                id="postedFrom"
-                type="date"
-                value={postedFrom}
-                onChange={(e) => setPostedFrom(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="postedTo">Posted To</Label>
-              <Input
-                id="postedTo"
-                type="date"
-                value={postedTo}
-                onChange={(e) => setPostedTo(e.target.value)}
-              />
+              <Label>Type</Label>
+              <Select
+                value={ptype}
+                onValueChange={(v) => setPtype(v ?? "all")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="presolicitation">
+                    Presolicitation
+                  </SelectItem>
+                  <SelectItem value="solicitation">Solicitation</SelectItem>
+                  <SelectItem value="combined">Combined Synopsis</SelectItem>
+                  <SelectItem value="sources_sought">Sources Sought</SelectItem>
+                  <SelectItem value="award">Award Notice</SelectItem>
+                  <SelectItem value="special">Special Notice</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
           <div className="flex gap-2 pt-2">
             <Button onClick={handleSearch} disabled={loading}>
               <MagnifyingGlass size={16} className="mr-2" />
-              {loading ? "Searching..." : "Search SAM.gov"}
+              {loading ? "Searching..." : "Search"}
             </Button>
             <Button variant="outline" onClick={handleSync} disabled={syncing}>
               <ArrowsClockwise
                 size={16}
                 className={`mr-2 ${syncing ? "animate-spin" : ""}`}
               />
-              {syncing ? "Syncing..." : "Sync & Save"}
+              {syncing ? "Syncing..." : "Sync to DB"}
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </FilterCard>
 
       {/* Results */}
-      {loading ? (
-        <ResultSkeletons />
+      {loading && results.length === 0 ? (
+        <ResultSkeletons count={6} />
       ) : results.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          {results.map((opp) => (
-            <Card
-              key={opp.id || opp.externalId}
-              className="hover:shadow-md transition-shadow"
-            >
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base leading-snug">
-                  {opp.title}
-                </CardTitle>
-                {opp.agency && (
-                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                    <Buildings size={14} />
-                    {opp.agency}
+        <>
+          <p className="text-sm text-muted-foreground">
+            Showing {results.length} of {totalRecords.toLocaleString()} results
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            {results.map((opp, idx) => (
+              <Card
+                key={opp.id || opp.externalId || idx}
+                className="hover:shadow-md transition-shadow"
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="line-clamp-2 text-base leading-snug">
+                    {opp.title}
+                  </CardTitle>
+                  {opp.agency && (
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Buildings size={14} />
+                      <span className="truncate">{opp.agency}</span>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap gap-1.5">
+                    {opp.type && (
+                      <Badge
+                        variant="secondary"
+                        className={
+                          typeColorMap[opp.type.toLowerCase()] ??
+                          "bg-blue-50 text-blue-700 hover:bg-blue-50"
+                        }
+                      >
+                        {opp.type}
+                      </Badge>
+                    )}
+                    {opp.setAside && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+                      >
+                        <Tag size={12} className="mr-1" />
+                        {opp.setAside}
+                      </Badge>
+                    )}
+                    {opp.naicsCode && (
+                      <Badge variant="outline" className="font-mono text-xs">
+                        {opp.naicsCode}
+                      </Badge>
+                    )}
                   </div>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {opp.type && (
-                    <Badge
-                      variant="secondary"
-                      className={typeColorMap[opp.type.toLowerCase()] ?? ""}
+
+                  <div className="grid grid-cols-2 gap-2 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <Calendar size={14} className="shrink-0" />
+                      <span>Posted: {fmtDate(opp.postedDate)}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Calendar size={14} className="shrink-0" />
+                      <span>Due: {fmtDate(opp.responseDeadline)}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    {opp.id && (
+                      <Link
+                        href={`/opportunities/${opp.id}`}
+                        className={buttonVariants({
+                          size: "sm",
+                          variant: "default",
+                        })}
+                      >
+                        View Details
+                      </Link>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleSave(opp.id || opp.externalId)}
+                      disabled={savingId === (opp.id || opp.externalId)}
                     >
-                      {opp.type}
-                    </Badge>
-                  )}
-                  {opp.setAside && (
-                    <Badge variant="secondary">
-                      <Tag size={12} className="mr-1" />
-                      {opp.setAside}
-                    </Badge>
-                  )}
-                  {opp.naicsCode && (
-                    <Badge variant="outline">{opp.naicsCode}</Badge>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <Calendar size={14} />
-                    Posted: {formatDate(opp.postedDate)}
+                      <FloppyDisk size={14} className="mr-1" />
+                      {savingId === (opp.id || opp.externalId)
+                        ? "Saving..."
+                        : "Save"}
+                    </Button>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Calendar size={14} />
-                    Due: {formatDate(opp.responseDeadline)}
-                  </div>
-                </div>
-
-                {opp.estimatedValue != null && (
-                  <p className="text-sm font-medium">
-                    Est. Value: {currencyFormatter.format(opp.estimatedValue)}
-                  </p>
-                )}
-
-                <div className="flex gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleSave(opp.id || opp.externalId)}
-                    disabled={savingId === (opp.id || opp.externalId)}
-                  >
-                    <FloppyDisk size={14} className="mr-1" />
-                    {savingId === (opp.id || opp.externalId)
-                      ? "Saving..."
-                      : "Save"}
-                  </Button>
-                  {opp.id && (
-                    <Link
-                      href={`/opportunities/${opp.id}`}
-                      className={buttonVariants({
-                        size: "sm",
-                        variant: "ghost",
-                      })}
-                    >
-                      View Details
-                    </Link>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          {results.length < totalRecords && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="outline"
+                onClick={handleLoadMore}
+                disabled={loading}
+              >
+                {loading ? "Loading..." : "Load More"}
+              </Button>
+            </div>
+          )}
+        </>
       ) : searched ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
+          <CardContent className="flex flex-col items-center justify-center py-16">
             <Binoculars
               size={48}
               weight="duotone"
-              className="mb-4 text-muted-foreground/50"
+              className="mb-4 text-muted-foreground/40"
             />
             <p className="text-lg font-medium text-muted-foreground">
               No opportunities found
@@ -376,18 +516,18 @@ function LiveSearchTab() {
         </Card>
       ) : (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
+          <CardContent className="flex flex-col items-center justify-center py-16">
             <Binoculars
               size={48}
               weight="duotone"
-              className="mb-4 text-muted-foreground/50"
+              className="mb-4 text-muted-foreground/40"
             />
             <p className="text-lg font-medium text-muted-foreground">
               Search for opportunities
             </p>
             <p className="mt-1 text-sm text-muted-foreground/70">
-              Enter your search criteria above and click &quot;Search
-              SAM.gov&quot; to find government contracts.
+              Enter your criteria above and click &quot;Search&quot; to find
+              government contracts on SAM.gov.
             </p>
           </CardContent>
         </Card>
@@ -396,9 +536,523 @@ function LiveSearchTab() {
   );
 }
 
-// ─── Saved Opportunities Tab ────────────────────────────
+// ─── Tab 2: Grants ──────────────────────────────────────
 
-function SavedOpportunitiesTab() {
+function GrantsTab({
+  onCountChange,
+}: {
+  onCountChange: (n: number) => void;
+}) {
+  const [keyword, setKeyword] = useState("");
+  const [agency, setAgency] = useState("");
+  const [status, setStatus] = useState("posted");
+  const [fundingCategory, setFundingCategory] = useState("");
+  const [results, setResults] = useState<GrantOpportunity[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
+
+  const doSearch = useCallback(
+    async (pageNum: number, append = false) => {
+      setLoading(true);
+      setSearched(true);
+      try {
+        const params = new URLSearchParams();
+        if (keyword) params.set("keyword", keyword);
+        if (agency) params.set("agency", agency);
+        if (status !== "all") params.set("status", status);
+        if (fundingCategory) params.set("fundingCategory", fundingCategory);
+        params.set("page", String(pageNum));
+        params.set("pageSize", "25");
+
+        const res = await fetch(
+          `/api/opportunities/search/grants?${params.toString()}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const grants: GrantOpportunity[] = data.data ?? data.grants ?? [];
+          if (append) {
+            setResults((prev) => [...prev, ...grants]);
+          } else {
+            setResults(grants);
+          }
+          setHasMore(grants.length === 25);
+          onCountChange(append ? results.length + grants.length : grants.length);
+        }
+      } catch {
+        // Search failed silently
+      } finally {
+        setLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [keyword, agency, status, fundingCategory]
+  );
+
+  const handleSearch = () => {
+    setPage(1);
+    doSearch(1, false);
+  };
+
+  const handleLoadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    doSearch(next, true);
+  };
+
+  return (
+    <div className="space-y-6">
+      <FilterCard
+        title="Grant Filters"
+        expanded={filtersOpen}
+        onToggle={() => setFiltersOpen(!filtersOpen)}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="space-y-2">
+              <Label htmlFor="grant-keyword">Keyword</Label>
+              <Input
+                id="grant-keyword"
+                placeholder="e.g. research, education"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="grant-agency">Agency</Label>
+              <Input
+                id="grant-agency"
+                placeholder="e.g. DOE, NSF"
+                value={agency}
+                onChange={(e) => setAgency(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select
+                value={status}
+                onValueChange={(v) => setStatus(v ?? "posted")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Posted" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="posted">Posted</SelectItem>
+                  <SelectItem value="closed">Closed</SelectItem>
+                  <SelectItem value="forecasted">Forecasted</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="grant-category">Funding Category</Label>
+              <Input
+                id="grant-category"
+                placeholder="e.g. Health, STEM"
+                value={fundingCategory}
+                onChange={(e) => setFundingCategory(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button onClick={handleSearch} disabled={loading}>
+              <MagnifyingGlass size={16} className="mr-2" />
+              {loading ? "Searching..." : "Search Grants"}
+            </Button>
+          </div>
+        </div>
+      </FilterCard>
+
+      {/* Results */}
+      {loading && results.length === 0 ? (
+        <ResultSkeletons count={6} />
+      ) : results.length > 0 ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            Showing {results.length} results
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            {results.map((grant, idx) => (
+              <Card
+                key={grant.id || idx}
+                className="hover:shadow-md transition-shadow"
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="line-clamp-2 text-base leading-snug">
+                    {grant.title}
+                  </CardTitle>
+                  {grant.agency && (
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Buildings size={14} />
+                      <span className="truncate">{grant.agency}</span>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Calendar size={14} className="shrink-0" />
+                    <span>
+                      {fmtDate(grant.postDate)} &rarr;{" "}
+                      {fmtDate(grant.closeDate)}
+                    </span>
+                  </div>
+
+                  {(grant.awardFloor != null || grant.awardCeiling != null) && (
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <CurrencyDollar
+                        size={14}
+                        className="shrink-0 text-emerald-600"
+                      />
+                      <span className="text-emerald-700">
+                        {grant.awardFloor != null
+                          ? currencyFmt.format(grant.awardFloor)
+                          : "$0"}
+                        {" - "}
+                        {grant.awardCeiling != null
+                          ? currencyFmt.format(grant.awardCeiling)
+                          : "N/A"}
+                      </span>
+                    </div>
+                  )}
+
+                  {grant.status && (
+                    <Badge
+                      variant="secondary"
+                      className="bg-sky-50 text-sky-700 hover:bg-sky-50"
+                    >
+                      {grant.status}
+                    </Badge>
+                  )}
+
+                  {grant.summary && (
+                    <p className="line-clamp-3 text-sm text-muted-foreground/80">
+                      {grant.summary}
+                    </p>
+                  )}
+
+                  <div className="pt-1">
+                    <Link
+                      href={`/opportunities/grant-${grant.id}`}
+                      className={buttonVariants({
+                        size: "sm",
+                        variant: "default",
+                      })}
+                    >
+                      View Details
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          {hasMore && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="outline"
+                onClick={handleLoadMore}
+                disabled={loading}
+              >
+                {loading ? "Loading..." : "Load More"}
+              </Button>
+            </div>
+          )}
+        </>
+      ) : searched ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Handshake
+              size={48}
+              weight="duotone"
+              className="mb-4 text-muted-foreground/40"
+            />
+            <p className="text-lg font-medium text-muted-foreground">
+              No grants found
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground/70">
+              Try adjusting your search filters.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Handshake
+              size={48}
+              weight="duotone"
+              className="mb-4 text-muted-foreground/40"
+            />
+            <p className="text-lg font-medium text-muted-foreground">
+              Search for grants
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground/70">
+              Find federal grant opportunities from Grants.gov.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── Tab 3: Market Intel (Awards) ───────────────────────
+
+function MarketIntelTab({
+  onCountChange,
+}: {
+  onCountChange: (n: number) => void;
+}) {
+  const [keyword, setKeyword] = useState("");
+  const [naicsCode, setNaicsCode] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [results, setResults] = useState<AwardResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
+
+  const doSearch = useCallback(
+    async (pageNum: number, append = false) => {
+      setLoading(true);
+      setSearched(true);
+      try {
+        const params = new URLSearchParams();
+        if (keyword) params.set("keyword", keyword);
+        if (naicsCode) params.set("naicsCode", naicsCode);
+        if (dateFrom) params.set("dateFrom", dateFrom);
+        if (dateTo) params.set("dateTo", dateTo);
+        params.set("page", String(pageNum));
+        params.set("limit", "25");
+
+        const res = await fetch(
+          `/api/opportunities/search/awards?${params.toString()}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const awards: AwardResult[] = data.data ?? data.awards ?? [];
+          if (append) {
+            setResults((prev) => [...prev, ...awards]);
+          } else {
+            setResults(awards);
+          }
+          setHasMore(awards.length === 25);
+          onCountChange(append ? results.length + awards.length : awards.length);
+        }
+      } catch {
+        // Search failed silently
+      } finally {
+        setLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [keyword, naicsCode, dateFrom, dateTo]
+  );
+
+  const handleSearch = () => {
+    setPage(1);
+    doSearch(1, false);
+  };
+
+  const handleLoadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    doSearch(next, true);
+  };
+
+  return (
+    <div className="space-y-6">
+      <FilterCard
+        title="Award Filters"
+        expanded={filtersOpen}
+        onToggle={() => setFiltersOpen(!filtersOpen)}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="space-y-2">
+              <Label htmlFor="award-keyword">Keyword</Label>
+              <Input
+                id="award-keyword"
+                placeholder="e.g. cloud, logistics"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="award-naics">NAICS Code</Label>
+              <Input
+                id="award-naics"
+                placeholder="e.g. 541512"
+                value={naicsCode}
+                onChange={(e) => setNaicsCode(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="award-from">Date From</Label>
+              <Input
+                id="award-from"
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="award-to">Date To</Label>
+              <Input
+                id="award-to"
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button onClick={handleSearch} disabled={loading}>
+              <MagnifyingGlass size={16} className="mr-2" />
+              {loading ? "Searching..." : "Search Awards"}
+            </Button>
+          </div>
+        </div>
+      </FilterCard>
+
+      {/* Results */}
+      {loading && results.length === 0 ? (
+        <ResultSkeletons count={6} />
+      ) : results.length > 0 ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            Showing {results.length} results
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            {results.map((award, idx) => (
+              <Card
+                key={award.id || idx}
+                className="hover:shadow-md transition-shadow"
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="line-clamp-1 text-base leading-snug">
+                    <Trophy
+                      size={16}
+                      weight="fill"
+                      className="mr-1.5 inline text-amber-500"
+                    />
+                    {award.recipientName ?? "Unknown Recipient"}
+                  </CardTitle>
+                  {award.agency && (
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Buildings size={14} />
+                      <span className="truncate">{award.agency}</span>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {award.awardAmount != null && (
+                    <p className="text-xl font-semibold text-emerald-600">
+                      {currencyFmt.format(award.awardAmount)}
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {award.contractType && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-indigo-50 text-indigo-700 hover:bg-indigo-50"
+                      >
+                        <FileText size={12} className="mr-1" />
+                        {award.contractType}
+                      </Badge>
+                    )}
+                    {award.naicsCode && (
+                      <Badge variant="outline" className="font-mono text-xs">
+                        {award.naicsCode}
+                      </Badge>
+                    )}
+                  </div>
+
+                  {(award.startDate || award.endDate) && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Calendar size={14} className="shrink-0" />
+                      <span>
+                        {fmtDate(award.startDate)} &rarr;{" "}
+                        {fmtDate(award.endDate)}
+                      </span>
+                    </div>
+                  )}
+
+                  {award.description && (
+                    <p className="line-clamp-2 text-sm text-muted-foreground/80">
+                      {award.description}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          {hasMore && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="outline"
+                onClick={handleLoadMore}
+                disabled={loading}
+              >
+                {loading ? "Loading..." : "Load More"}
+              </Button>
+            </div>
+          )}
+        </>
+      ) : searched ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Trophy
+              size={48}
+              weight="duotone"
+              className="mb-4 text-muted-foreground/40"
+            />
+            <p className="text-lg font-medium text-muted-foreground">
+              No awards found
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground/70">
+              Try adjusting your search filters.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Trophy
+              size={48}
+              weight="duotone"
+              className="mb-4 text-muted-foreground/40"
+            />
+            <p className="text-lg font-medium text-muted-foreground">
+              Explore award data
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground/70">
+              Search USASpending award data for competitive intelligence.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── Tab 4: Saved Opportunities ─────────────────────────
+
+function SavedTab({
+  onCountChange,
+}: {
+  onCountChange: (n: number) => void;
+}) {
   const [opportunities, setOpportunities] = useState<SavedOpportunity[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -410,12 +1064,16 @@ function SavedOpportunitiesTab() {
       try {
         const params = new URLSearchParams();
         if (statusFilter !== "all") params.set("status", statusFilter);
+        else params.set("status", "saved");
         if (searchQuery) params.set("search", searchQuery);
 
         const res = await fetch(`/api/opportunities?${params.toString()}`);
         if (res.ok) {
           const data = await res.json();
-          setOpportunities(data.opportunities ?? data ?? []);
+          const opps: SavedOpportunity[] =
+            data.opportunities ?? data ?? [];
+          setOpportunities(opps);
+          onCountChange(opps.length);
         }
       } catch {
         // Fetch failed silently
@@ -425,6 +1083,7 @@ function SavedOpportunitiesTab() {
     }
 
     fetchOpportunities();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, searchQuery]);
 
   return (
@@ -447,7 +1106,7 @@ function SavedOpportunitiesTab() {
                 <SelectValue placeholder="All Statuses" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="all">All</SelectItem>
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="saved">Saved</SelectItem>
                 <SelectItem value="dismissed">Dismissed</SelectItem>
@@ -465,7 +1124,7 @@ function SavedOpportunitiesTab() {
 
       {/* Results */}
       {loading ? (
-        <ResultSkeletons />
+        <ResultSkeletons count={6} />
       ) : opportunities.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2">
           {opportunities.map((opp) => (
@@ -473,7 +1132,7 @@ function SavedOpportunitiesTab() {
               <Card className="hover:shadow-md transition-shadow cursor-pointer h-full">
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="text-base leading-snug">
+                    <CardTitle className="line-clamp-2 text-base leading-snug">
                       {opp.title}
                     </CardTitle>
                     <Badge
@@ -487,18 +1146,13 @@ function SavedOpportunitiesTab() {
                   {opp.agency && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Buildings size={14} />
-                      {opp.agency}
+                      <span className="truncate">{opp.agency}</span>
                     </div>
                   )}
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {opp.matchScore != null && (
                     <div className="flex items-center gap-2">
-                      <Star
-                        size={14}
-                        weight="fill"
-                        className="text-yellow-500"
-                      />
                       <div className="flex-1">
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-muted-foreground">
@@ -510,7 +1164,7 @@ function SavedOpportunitiesTab() {
                         </div>
                         <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
                           <div
-                            className="h-full rounded-full bg-yellow-500 transition-all"
+                            className="h-full rounded-full bg-primary transition-all"
                             style={{ width: `${opp.matchScore}%` }}
                           />
                         </div>
@@ -520,7 +1174,10 @@ function SavedOpportunitiesTab() {
 
                   {opp.matchedClient && (
                     <div className="flex items-center gap-1.5 text-sm">
-                      <Buildings size={14} className="text-muted-foreground" />
+                      <Handshake
+                        size={14}
+                        className="text-muted-foreground"
+                      />
                       <span className="text-muted-foreground">Client:</span>
                       <span className="font-medium">
                         {opp.matchedClient.name}
@@ -531,7 +1188,7 @@ function SavedOpportunitiesTab() {
                   {opp.responseDeadline && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Calendar size={14} />
-                      Deadline: {formatDate(opp.responseDeadline)}
+                      Deadline: {fmtDate(opp.responseDeadline)}
                     </div>
                   )}
                 </CardContent>
@@ -541,18 +1198,17 @@ function SavedOpportunitiesTab() {
         </div>
       ) : (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
+          <CardContent className="flex flex-col items-center justify-center py-16">
             <FloppyDisk
               size={48}
               weight="duotone"
-              className="mb-4 text-muted-foreground/50"
+              className="mb-4 text-muted-foreground/40"
             />
             <p className="text-lg font-medium text-muted-foreground">
               No saved opportunities
             </p>
             <p className="mt-1 text-sm text-muted-foreground/70">
-              Search for opportunities in the Live Search tab and save them
-              here.
+              Search for opportunities in the Contracts tab and save them here.
             </p>
           </CardContent>
         </Card>
@@ -564,6 +1220,11 @@ function SavedOpportunitiesTab() {
 // ─── Main Page ──────────────────────────────────────────
 
 export default function OpportunitiesPage() {
+  const [contractsCount, setContractsCount] = useState(0);
+  const [grantsCount, setGrantsCount] = useState(0);
+  const [awardsCount, setAwardsCount] = useState(0);
+  const [savedCount, setSavedCount] = useState(0);
+
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
@@ -575,24 +1236,44 @@ export default function OpportunitiesPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="search">
-        <TabsList>
-          <TabsTrigger value="search">
-            <Binoculars size={16} className="mr-1.5" />
-            Live Search
+      <Tabs defaultValue="contracts">
+        <TabsList className="flex-wrap">
+          <TabsTrigger value="contracts">
+            <FileText size={16} className="mr-1.5" />
+            Contracts (SAM.gov)
+            <TabBadge count={contractsCount} />
+          </TabsTrigger>
+          <TabsTrigger value="grants">
+            <Handshake size={16} className="mr-1.5" />
+            Grants
+            <TabBadge count={grantsCount} />
+          </TabsTrigger>
+          <TabsTrigger value="awards">
+            <Trophy size={16} className="mr-1.5" />
+            Market Intel (Awards)
+            <TabBadge count={awardsCount} />
           </TabsTrigger>
           <TabsTrigger value="saved">
             <FloppyDisk size={16} className="mr-1.5" />
-            Saved Opportunities
+            Saved
+            <TabBadge count={savedCount} />
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="search">
-          <LiveSearchTab />
+        <TabsContent value="contracts" className="mt-6">
+          <ContractsTab onCountChange={setContractsCount} />
         </TabsContent>
 
-        <TabsContent value="saved">
-          <SavedOpportunitiesTab />
+        <TabsContent value="grants" className="mt-6">
+          <GrantsTab onCountChange={setGrantsCount} />
+        </TabsContent>
+
+        <TabsContent value="awards" className="mt-6">
+          <MarketIntelTab onCountChange={setAwardsCount} />
+        </TabsContent>
+
+        <TabsContent value="saved" className="mt-6">
+          <SavedTab onCountChange={setSavedCount} />
         </TabsContent>
       </Tabs>
     </div>
