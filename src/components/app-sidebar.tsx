@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   SquaresFour,
   FileText,
+  Binoculars,
   Buildings,
   Layout,
   CheckCircle,
@@ -29,6 +30,7 @@ interface AppSidebarProps {
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: SquaresFour },
+  { href: "/opportunities", label: "Opportunities", icon: Binoculars },
   { href: "/proposals", label: "Proposals", icon: FileText },
   { href: "/clients", label: "Clients", icon: Buildings },
   { href: "/templates", label: "Templates", icon: Layout },
