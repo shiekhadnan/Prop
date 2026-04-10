@@ -38,22 +38,25 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 interface SamOpportunity {
   id: string;
-  externalId: string;
+  externalId?: string;
   title: string;
+  department: string | null;
   agency: string | null;
   type: string | null;
   setAside: string | null;
   naicsCode: string | null;
   postedDate: string | null;
   responseDeadline: string | null;
-  estimatedValue: number | null;
+  estimatedValue?: number | null;
   description: string | null;
+  solicitationNumber?: string | null;
 }
 
 interface GrantOpportunity {
   id: string;
   title: string;
   agency: string | null;
+  agencyName: string | null;
   postDate: string | null;
   closeDate: string | null;
   awardFloor: number | null;
@@ -61,18 +64,22 @@ interface GrantOpportunity {
   summary: string | null;
   status: string | null;
   category: string | null;
+  opportunityNumber: string | null;
 }
 
 interface AwardResult {
   id: string;
+  awardId: string;
   recipientName: string | null;
   agency: string | null;
+  subAgency: string | null;
   awardAmount: number | null;
   contractType: string | null;
   naicsCode: string | null;
   startDate: string | null;
   endDate: string | null;
   description: string | null;
+  stateCode: string | null;
 }
 
 interface SavedOpportunity {
@@ -105,10 +112,12 @@ const statusColorMap: Record<string, string> = {
 const typeColorMap: Record<string, string> = {
   presolicitation: "bg-purple-100 text-purple-800 hover:bg-purple-100",
   solicitation: "bg-blue-100 text-blue-800 hover:bg-blue-100",
-  award: "bg-green-100 text-green-800 hover:bg-green-100",
-  combined: "bg-orange-100 text-orange-800 hover:bg-orange-100",
-  sources_sought: "bg-amber-100 text-amber-800 hover:bg-amber-100",
-  special: "bg-slate-100 text-slate-700 hover:bg-slate-100",
+  "award notice": "bg-green-100 text-green-800 hover:bg-green-100",
+  "combined synopsis/solicitation":
+    "bg-orange-100 text-orange-800 hover:bg-orange-100",
+  "sources sought": "bg-amber-100 text-amber-800 hover:bg-amber-100",
+  "special notice": "bg-pink-100 text-pink-800 hover:bg-pink-100",
+  "sale of surplus": "bg-gray-100 text-gray-600 hover:bg-gray-100",
 };
 
 function fmtDate(dateStr: string | null | undefined): string {
@@ -211,6 +220,7 @@ function ContractsTab({
   const [syncing, setSyncing] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(true);
 
   const ptypeMap: Record<string, string> = {
@@ -240,6 +250,9 @@ function ContractsTab({
         );
         if (res.ok) {
           const data = await res.json();
+          if (data.error) {
+            setError(data.error);
+          }
           const opps: SamOpportunity[] = data.results ?? data.data ?? data.opportunities ?? [];
           const total: number = data.total ?? data.totalRecords ?? opps.length;
           if (append) {
@@ -461,7 +474,7 @@ function ContractsTab({
                   <div className="flex gap-2 pt-1">
                     {opp.id && (
                       <Link
-                        href={`/opportunities/${opp.id}`}
+                        href={`/opportunities/sam-${opp.id}`}
                         className={buttonVariants({
                           size: "sm",
                           variant: "default",
@@ -473,13 +486,11 @@ function ContractsTab({
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => handleSave(opp.id || opp.externalId)}
-                      disabled={savingId === (opp.id || opp.externalId)}
+                      onClick={() => handleSave(opp.id)}
+                      disabled={savingId === opp.id}
                     >
                       <FloppyDisk size={14} className="mr-1" />
-                      {savingId === (opp.id || opp.externalId)
-                        ? "Saving..."
-                        : "Save"}
+                      {savingId === opp.id ? "Saving..." : "Save"}
                     </Button>
                   </div>
                 </CardContent>
@@ -550,14 +561,16 @@ function GrantsTab({
   const [results, setResults] = useState<GrantOpportunity[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
+  const [totalRecords, setTotalRecords] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(true);
 
   const doSearch = useCallback(
     async (pageNum: number, append = false) => {
       setLoading(true);
       setSearched(true);
+      setError(null);
       try {
         const params = new URLSearchParams();
         if (keyword) params.set("keyword", keyword);
@@ -572,17 +585,21 @@ function GrantsTab({
         );
         if (res.ok) {
           const data = await res.json();
-          const grants: GrantOpportunity[] = data.data ?? data.grants ?? [];
+          if (data.error) {
+            setError(data.error);
+          }
+          const grants: GrantOpportunity[] = data.results ?? data.data ?? [];
+          const total: number = data.total ?? grants.length;
           if (append) {
             setResults((prev) => [...prev, ...grants]);
           } else {
             setResults(grants);
           }
-          setHasMore(grants.length === 25);
+          setTotalRecords(total);
           onCountChange(append ? results.length + grants.length : grants.length);
         }
       } catch {
-        // Search failed silently
+        setError("Failed to search grants. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -670,12 +687,32 @@ function GrantsTab({
       </FilterCard>
 
       {/* Results */}
+      {/* Error Banner */}
+      {error && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="flex items-start gap-3 py-3">
+            <Handshake size={20} className="mt-0.5 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-medium text-amber-800">
+                {error.includes("API key")
+                  ? "API Key Required"
+                  : "Notice"}
+              </p>
+              <p className="text-sm text-amber-700">{error}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Results */}
       {loading && results.length === 0 ? (
         <ResultSkeletons count={6} />
       ) : results.length > 0 ? (
         <>
           <p className="text-sm text-muted-foreground">
-            Showing {results.length} results
+            Showing {results.length}
+            {totalRecords > 0 ? ` of ${totalRecords.toLocaleString()}` : ""}{" "}
+            results
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             {results.map((grant, idx) => (
@@ -687,10 +724,12 @@ function GrantsTab({
                   <CardTitle className="line-clamp-2 text-base leading-snug">
                     {grant.title}
                   </CardTitle>
-                  {grant.agency && (
+                  {(grant.agencyName || grant.agency) && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Buildings size={14} />
-                      <span className="truncate">{grant.agency}</span>
+                      <span className="truncate">
+                        {grant.agencyName || grant.agency}
+                      </span>
                     </div>
                   )}
                 </CardHeader>
@@ -721,14 +760,21 @@ function GrantsTab({
                     </div>
                   )}
 
-                  {grant.status && (
-                    <Badge
-                      variant="secondary"
-                      className="bg-sky-50 text-sky-700 hover:bg-sky-50"
-                    >
-                      {grant.status}
-                    </Badge>
-                  )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {grant.status && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-sky-50 text-sky-700 hover:bg-sky-50"
+                      >
+                        {grant.status}
+                      </Badge>
+                    )}
+                    {grant.category && (
+                      <Badge variant="outline" className="text-xs">
+                        {grant.category}
+                      </Badge>
+                    )}
+                  </div>
 
                   {grant.summary && (
                     <p className="line-clamp-3 text-sm text-muted-foreground/80">
@@ -751,7 +797,7 @@ function GrantsTab({
               </Card>
             ))}
           </div>
-          {hasMore && (
+          {results.length < totalRecords && (
             <div className="flex justify-center pt-2">
               <Button
                 variant="outline"
@@ -763,7 +809,7 @@ function GrantsTab({
             </div>
           )}
         </>
-      ) : searched ? (
+      ) : searched && !error ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Handshake
@@ -779,7 +825,7 @@ function GrantsTab({
             </p>
           </CardContent>
         </Card>
-      ) : (
+      ) : !searched ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Handshake
@@ -795,7 +841,7 @@ function GrantsTab({
             </p>
           </CardContent>
         </Card>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -814,6 +860,7 @@ function MarketIntelTab({
   const [results, setResults] = useState<AwardResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
@@ -822,6 +869,7 @@ function MarketIntelTab({
     async (pageNum: number, append = false) => {
       setLoading(true);
       setSearched(true);
+      setError(null);
       try {
         const params = new URLSearchParams();
         if (keyword) params.set("keyword", keyword);
@@ -836,17 +884,21 @@ function MarketIntelTab({
         );
         if (res.ok) {
           const data = await res.json();
-          const awards: AwardResult[] = data.data ?? data.awards ?? [];
+          if (data.error) {
+            setError(data.error);
+          }
+          const awards: AwardResult[] = data.results ?? data.data ?? [];
+          const hasNext: boolean = data.hasNext ?? awards.length === 25;
           if (append) {
             setResults((prev) => [...prev, ...awards]);
           } else {
             setResults(awards);
           }
-          setHasMore(awards.length === 25);
+          setHasMore(hasNext);
           onCountChange(append ? results.length + awards.length : awards.length);
         }
       } catch {
-        // Search failed silently
+        setError("Failed to search awards. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -924,6 +976,15 @@ function MarketIntelTab({
         </div>
       </FilterCard>
 
+      {/* Error Banner */}
+      {error && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="py-3">
+            <p className="text-sm text-red-700">{error}</p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Results */}
       {loading && results.length === 0 ? (
         <ResultSkeletons count={6} />
@@ -935,7 +996,7 @@ function MarketIntelTab({
           <div className="grid gap-4 md:grid-cols-2">
             {results.map((award, idx) => (
               <Card
-                key={award.id || idx}
+                key={award.id || award.awardId || idx}
                 className="hover:shadow-md transition-shadow"
               >
                 <CardHeader className="pb-3">
@@ -976,7 +1037,18 @@ function MarketIntelTab({
                         {award.naicsCode}
                       </Badge>
                     )}
+                    {award.stateCode && (
+                      <Badge variant="outline" className="text-xs">
+                        {award.stateCode}
+                      </Badge>
+                    )}
                   </div>
+
+                  {award.awardId && (
+                    <p className="font-mono text-xs text-muted-foreground">
+                      Award #{award.awardId}
+                    </p>
+                  )}
 
                   {(award.startDate || award.endDate) && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -992,6 +1064,20 @@ function MarketIntelTab({
                     <p className="line-clamp-2 text-sm text-muted-foreground/80">
                       {award.description}
                     </p>
+                  )}
+
+                  {award.id && (
+                    <div className="pt-1">
+                      <Link
+                        href={`/opportunities/award-${award.id}`}
+                        className={buttonVariants({
+                          size: "sm",
+                          variant: "outline",
+                        })}
+                      >
+                        View Details
+                      </Link>
+                    </div>
                   )}
                 </CardContent>
               </Card>
@@ -1009,7 +1095,7 @@ function MarketIntelTab({
             </div>
           )}
         </>
-      ) : searched ? (
+      ) : searched && !error ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Trophy
@@ -1021,11 +1107,11 @@ function MarketIntelTab({
               No awards found
             </p>
             <p className="mt-1 text-sm text-muted-foreground/70">
-              Try adjusting your search filters.
+              Try adjusting your search filters or date range.
             </p>
           </CardContent>
         </Card>
-      ) : (
+      ) : !searched ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Trophy
@@ -1037,11 +1123,12 @@ function MarketIntelTab({
               Explore award data
             </p>
             <p className="mt-1 text-sm text-muted-foreground/70">
-              Search USASpending award data for competitive intelligence.
+              Search USASpending.gov for contract awards and competitive
+              intelligence.
             </p>
           </CardContent>
         </Card>
-      )}
+      ) : null}
     </div>
   );
 }

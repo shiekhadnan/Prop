@@ -1,6 +1,7 @@
-// Simpler Grants.gov API - No authentication required
+// Simpler Grants.gov API
 // Search: POST https://api.simpler.grants.gov/v1/opportunities/search
 // Details: GET https://api.simpler.grants.gov/v1/opportunities/{id}
+// API key: free from https://simpler.grants.gov/developers (required)
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -14,17 +15,19 @@ export interface GrantSearchParams {
 }
 
 export interface GrantOpportunity {
-  id: number;
+  id: string;
   title: string;
   agency: string | null;
+  agencyName: string | null;
   status: string | null;
   postDate: string | null;
   closeDate: string | null;
   awardFloor: number | null;
   awardCeiling: number | null;
   summary: string | null;
-  fundingCategory: string | null;
+  category: string | null;
   applicantTypes: string[];
+  opportunityNumber: string | null;
 }
 
 export interface GrantSearchResult {
@@ -37,11 +40,17 @@ export interface GrantSearchResult {
 
 const GRANTS_BASE_URL = "https://api.simpler.grants.gov/v1/opportunities";
 
-const DEFAULT_HEADERS: HeadersInit = {
-  Accept: "application/json",
-  "Content-Type": "application/json",
-  "User-Agent": "PropFlow/1.0",
-};
+function getHeaders(): HeadersInit {
+  const headers: HeadersInit = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  const apiKey = process.env.GRANTS_GOV_API_KEY;
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+  }
+  return headers;
+}
 
 const FETCH_TIMEOUT = 30_000;
 
@@ -54,24 +63,65 @@ function mapGrantOpportunity(raw: Record<string, unknown>): GrantOpportunity {
       )
     : [];
 
+  // summary can be a nested object with description_summary
+  const summaryRaw = raw.summary as Record<string, unknown> | string | null;
+  let summary: string | null = null;
+  if (typeof summaryRaw === "string") {
+    summary = summaryRaw;
+  } else if (summaryRaw && typeof summaryRaw === "object") {
+    summary =
+      (summaryRaw.summary_description as string) ??
+      (summaryRaw.description as string) ??
+      null;
+  }
+
+  // award amounts can be in the summary object
+  const awardFloor =
+    raw.award_floor != null
+      ? Number(raw.award_floor)
+      : summaryRaw && typeof summaryRaw === "object" && summaryRaw.award_floor != null
+        ? Number(summaryRaw.award_floor)
+        : null;
+  const awardCeiling =
+    raw.award_ceiling != null
+      ? Number(raw.award_ceiling)
+      : summaryRaw && typeof summaryRaw === "object" && summaryRaw.award_ceiling != null
+        ? Number(summaryRaw.award_ceiling)
+        : null;
+
+  // Dates can be in the summary object too
+  const postDate =
+    (raw.post_date as string) ??
+    (summaryRaw && typeof summaryRaw === "object"
+      ? (summaryRaw.post_date as string)
+      : null) ??
+    null;
+  const closeDate =
+    (raw.close_date as string) ??
+    (summaryRaw && typeof summaryRaw === "object"
+      ? (summaryRaw.close_date as string)
+      : null) ??
+    null;
+
   return {
-    id: Number(raw.opportunity_id ?? raw.id ?? 0),
+    id: String(raw.opportunity_id ?? raw.id ?? ""),
     title: String(raw.opportunity_title ?? raw.title ?? ""),
-    agency: (raw.agency_code as string) ?? (raw.agency as string) ?? null,
+    agency: (raw.agency_code as string) ?? null,
+    agencyName: (raw.agency_name as string) ?? (raw.agency as string) ?? null,
     status:
       (raw.opportunity_status as string) ?? (raw.status as string) ?? null,
-    postDate: (raw.post_date as string) ?? null,
-    closeDate: (raw.close_date as string) ?? null,
-    awardFloor:
-      raw.award_floor != null ? Number(raw.award_floor) : null,
-    awardCeiling:
-      raw.award_ceiling != null ? Number(raw.award_ceiling) : null,
-    summary: (raw.summary?.toString() ?? raw.description?.toString()) ?? null,
-    fundingCategory:
-      (raw.funding_category as string) ??
+    postDate,
+    closeDate,
+    awardFloor,
+    awardCeiling,
+    summary,
+    category:
       (raw.category as string) ??
+      (raw.funding_category as string) ??
       null,
     applicantTypes,
+    opportunityNumber:
+      (raw.opportunity_number as string) ?? null,
   };
 }
 
@@ -82,11 +132,17 @@ export async function searchGrants(
 ): Promise<GrantSearchResult> {
   try {
     // Build filters object
-    const filters: Record<string, unknown> = {
-      opportunity_status: {
-        one_of: [params.status || "posted"],
-      },
-    };
+    const filters: Record<string, unknown> = {};
+
+    if (params.status && params.status !== "all") {
+      filters.opportunity_status = {
+        one_of: [params.status],
+      };
+    } else {
+      filters.opportunity_status = {
+        one_of: ["posted"],
+      };
+    }
 
     if (params.agency) {
       filters.agency = { one_of: [params.agency] };
@@ -96,25 +152,37 @@ export async function searchGrants(
     }
 
     const body = {
-      query: params.keyword ?? "",
+      query: params.keyword || "government",
       filters,
       pagination: {
         page_offset: params.page ?? 1,
         page_size: params.pageSize ?? 25,
-        order_by: "post_date",
-        sort_direction: "descending",
+        sort_order: [
+          {
+            order_by: "post_date",
+            sort_direction: "descending",
+          },
+        ],
       },
     };
 
     const response = await fetch(`${GRANTS_BASE_URL}/search`, {
       method: "POST",
-      headers: DEFAULT_HEADERS,
+      headers: getHeaders(),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
+      if (response.status === 401 || response.status === 403) {
+        return {
+          results: [],
+          total: 0,
+          error:
+            "Grants.gov API key required. Add GRANTS_GOV_API_KEY to your .env file. Get a free key at simpler.grants.gov/developers",
+        };
+      }
       return {
         results: [],
         total: 0,
@@ -125,7 +193,7 @@ export async function searchGrants(
     const data = await response.json();
 
     const rawResults: Record<string, unknown>[] =
-      data?.data ?? data?.opportunities ?? data?.results ?? [];
+      data?.data ?? data?.results ?? [];
     const total: number =
       data?.pagination_info?.total_records ??
       data?.total ??
@@ -145,16 +213,13 @@ export async function searchGrants(
 }
 
 export async function fetchGrantDetail(
-  opportunityId: number
+  opportunityId: string
 ): Promise<{ data: Record<string, unknown> | null; error?: string }> {
   try {
     const url = `${GRANTS_BASE_URL}/${opportunityId}`;
 
     const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "PropFlow/1.0",
-      },
+      headers: getHeaders(),
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
 

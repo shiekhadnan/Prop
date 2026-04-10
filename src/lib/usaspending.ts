@@ -1,6 +1,6 @@
 // USASpending.gov API - No authentication required
 // Search: POST https://api.usaspending.gov/api/v2/search/spending_by_award/
-// Details: GET https://api.usaspending.gov/api/v2/awards/{id}/
+// Details: GET https://api.usaspending.gov/api/v2/awards/{generated_internal_id}/
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -15,7 +15,9 @@ export interface AwardSearchParams {
 }
 
 export interface Award {
+  id: string;
   awardId: string;
+  generatedId: string;
   recipientName: string | null;
   startDate: string | null;
   endDate: string | null;
@@ -25,12 +27,14 @@ export interface Award {
   contractType: string | null;
   naicsCode: string | null;
   description: string | null;
+  stateCode: string | null;
 }
 
 export interface AwardSearchResult {
   results: Award[];
   total: number;
   page: number;
+  hasNext: boolean;
   error?: string;
 }
 
@@ -41,7 +45,6 @@ const USA_SPENDING_BASE = "https://api.usaspending.gov/api/v2";
 const DEFAULT_HEADERS: HeadersInit = {
   Accept: "application/json",
   "Content-Type": "application/json",
-  "User-Agent": "PropFlow/1.0",
 };
 
 const FETCH_TIMEOUT = 30_000;
@@ -57,13 +60,18 @@ const SEARCH_FIELDS = [
   "Contract Award Type",
   "NAICS Code",
   "Description",
+  "Place of Performance State Code",
+  "Place of Performance Country Code",
 ];
 
 // ─── Helpers ─────────────────────────────────────────────
 
 function mapAward(raw: Record<string, unknown>): Award {
+  const generatedId = String(raw["generated_internal_id"] ?? "");
   return {
+    id: generatedId || String(raw["internal_id"] ?? raw["Award ID"] ?? ""),
     awardId: String(raw["Award ID"] ?? ""),
+    generatedId,
     recipientName: (raw["Recipient Name"] as string) ?? null,
     startDate: (raw["Start Date"] as string) ?? null,
     endDate: (raw["End Date"] as string) ?? null,
@@ -74,6 +82,7 @@ function mapAward(raw: Record<string, unknown>): Award {
     contractType: (raw["Contract Award Type"] as string) ?? null,
     naicsCode: (raw["NAICS Code"] as string) ?? null,
     description: (raw["Description"] as string) ?? null,
+    stateCode: (raw["Place of Performance State Code"] as string) ?? null,
   };
 }
 
@@ -86,21 +95,24 @@ export async function searchAwards(
   const limit = params.limit ?? 25;
 
   try {
-    // Build filters
+    // Build filters — time_period is required (min: 2007-10-01)
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultFrom = new Date();
+    defaultFrom.setFullYear(defaultFrom.getFullYear() - 1);
+    const defaultFromStr = defaultFrom.toISOString().slice(0, 10);
+
     const filters: Record<string, unknown> = {
       award_type_codes: ["A", "B", "C", "D"],
+      time_period: [
+        {
+          start_date: params.dateFrom || defaultFromStr,
+          end_date: params.dateTo || today,
+        },
+      ],
     };
 
     if (params.keyword) {
       filters.keywords = [params.keyword];
-    }
-    if (params.dateFrom || params.dateTo) {
-      filters.time_period = [
-        {
-          start_date: params.dateFrom ?? "2000-01-01",
-          end_date: params.dateTo ?? new Date().toISOString().slice(0, 10),
-        },
-      ];
     }
     if (params.naicsCode) {
       filters.naics_codes = { require: [params.naicsCode] };
@@ -141,6 +153,7 @@ export async function searchAwards(
         results: [],
         total: 0,
         page,
+        hasNext: false,
         error: `USASpending API error (${response.status}): ${text || response.statusText}`,
       };
     }
@@ -148,19 +161,22 @@ export async function searchAwards(
     const data = await response.json();
 
     const rawResults: Record<string, unknown>[] = data?.results ?? [];
+    const hasNext: boolean = data?.page_metadata?.hasNext ?? false;
     const total: number =
-      data?.page_metadata?.total ?? data?.total ?? rawResults.length;
+      data?.page_metadata?.total ?? rawResults.length;
 
     return {
       results: rawResults.map(mapAward),
       total,
       page,
+      hasNext,
     };
   } catch (error) {
     return {
       results: [],
       total: 0,
       page,
+      hasNext: false,
       error: `USASpending search failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
@@ -175,7 +191,6 @@ export async function fetchAwardDetail(
     const response = await fetch(url, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "PropFlow/1.0",
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
