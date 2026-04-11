@@ -214,7 +214,12 @@ export async function fetchSamOpportunityDetail(
     const url = `${SAM_DETAIL_URL}/${encodeURIComponent(opportunityId)}`;
 
     const response = await fetch(url, {
-      headers: DEFAULT_HEADERS,
+      headers: {
+        ...DEFAULT_HEADERS,
+        // Detail endpoint requires hal+json specifically (returns 406 otherwise)
+        Accept: "application/hal+json",
+        Referer: `https://sam.gov/opp/${encodeURIComponent(opportunityId)}/view`,
+      },
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
 

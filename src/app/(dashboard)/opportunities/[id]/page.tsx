@@ -91,8 +91,10 @@ function fmtDate(d: string | null | undefined): string {
   }
 }
 
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+function stripHtml(html: unknown): string {
+  if (!html) return "";
+  const str = typeof html === "string" ? html : String(html);
+  return str.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 const typeColorMap: Record<string, string> = {
@@ -112,47 +114,66 @@ function mapSamDetail(
   data: Record<string, unknown>,
   resources: Record<string, unknown>[]
 ): OpportunityDetail {
-  // SAM detail data can be nested under `data` or direct
-  const d = (data.data as Record<string, unknown>) ?? data;
+  // SAM detail API nests core fields in `data2`, with some fields at top level
+  const d2 = (data.data2 as Record<string, unknown>) ?? {};
+  const topLevel = data;
 
-  const typeRaw = d.type as string | Record<string, unknown> | null;
-  const typeStr =
-    typeof typeRaw === "object" && typeRaw
-      ? (typeRaw.value as string) ?? null
-      : (typeRaw as string) ?? null;
+  // Type: data2.type is a single-letter code (s=solicitation, o=combined, etc.)
+  const typeCodeMap: Record<string, string> = {
+    o: "Combined Synopsis/Solicitation",
+    p: "Presolicitation",
+    k: "Combined Synopsis/Solicitation",
+    r: "Sources Sought",
+    s: "Special Notice",
+    i: "Sale of Surplus",
+    a: "Award Notice",
+  };
+  const typeCode = d2.type as string | undefined;
+  const typeStr = typeCode ? (typeCodeMap[typeCode] ?? typeCode) : null;
 
-  // Descriptions
-  const descArr = d.descriptions as Array<Record<string, unknown>> | undefined;
-  const description =
-    (d.description as string) ??
-    descArr?.[0]?.content?.toString() ??
-    null;
-
-  // Org hierarchy
-  const orgArr = d.organizationHierarchy as
+  // Description: top-level array of {body: "html"}
+  const descArr = topLevel.description as
     | Array<Record<string, unknown>>
     | undefined;
-  const dept = orgArr?.find((o) => o.level === 1)?.name as string | undefined;
-  const agency = orgArr?.find((o) => o.level === 2)?.name as string | undefined;
-  const office = orgArr?.find(
-    (o) => (o.level as number) >= 3
-  )?.name as string | undefined;
+  const description = descArr?.[0]?.body?.toString() ?? null;
 
-  // Place of performance
-  const pop = d.placeOfPerformance as Record<string, unknown> | undefined;
+  // Solicitation details
+  const solicitation = d2.solicitation as Record<string, unknown> | undefined;
+  const deadlines = solicitation?.deadlines as
+    | Record<string, unknown>
+    | undefined;
+  const setAsideCode = (solicitation?.setAside as string) ?? null;
+
+  // NAICS
+  const naicsArr = d2.naics as Array<Record<string, unknown>> | undefined;
+  const naicsCode = naicsArr?.[0]?.code as string[] | undefined;
+  const naicsStr = naicsCode?.[0] ?? null;
+
+  // Place of performance (inside data2)
+  const pop = d2.placeOfPerformance as Record<string, unknown> | undefined;
+  const popCity = pop?.city as Record<string, unknown> | undefined;
+  const popState = pop?.state as Record<string, unknown> | undefined;
+  const popCountry = pop?.country as Record<string, unknown> | undefined;
   const placeStr = pop
-    ? [pop.city, pop.state, pop.country].filter(Boolean).join(", ") || null
+    ? [popCity?.name, popState?.name, popCountry?.name]
+        .filter(Boolean)
+        .join(", ") || null
     : null;
 
-  // Contact
-  const contacts = d.pointOfContact as
+  // Contacts (inside data2)
+  const contacts = d2.pointOfContact as
     | Array<Record<string, unknown>>
     | undefined;
-  const contact = contacts?.[0];
+  // Find the first contact with actual info
+  const contact =
+    contacts?.find((c) => c.fullName || c.email) ?? contacts?.[0];
 
-  // Award
-  const awardRaw = d.award as Record<string, unknown> | undefined;
+  // Award (inside data2)
+  const awardRaw = d2.award as Record<string, unknown> | undefined;
   const awardee = awardRaw?.awardee as Record<string, unknown> | undefined;
+
+  // Archive (inside data2)
+  const archive = d2.archive as Record<string, unknown> | undefined;
 
   // Resources
   const mappedResources = resources.map((r) => ({
@@ -160,26 +181,38 @@ function mapSamDetail(
     url: r.downloadUrl as string | undefined,
   }));
 
+  // Status from top-level
+  const status = topLevel.status as Record<string, unknown> | undefined;
+  const isArchived = topLevel.archived as boolean | undefined;
+  const isCancelled = topLevel.cancelled as boolean | undefined;
+  const statusStr = isCancelled
+    ? "Cancelled"
+    : isArchived
+      ? "Archived"
+      : status?.value
+        ? String(status.value)
+        : "Active";
+
+  const oppId =
+    (topLevel.opportunityId as string) ??
+    (topLevel.id as string) ??
+    null;
+
   return {
     source: "sam",
-    title: String(d.title ?? "Untitled"),
-    subtitle: (d.solicitationNumber as string) ?? null,
-    department: dept ?? (d.department as string) ?? null,
-    agency: agency ?? (d.agency as string) ?? null,
-    office: office ?? (d.office as string) ?? null,
+    title: String(d2.title ?? topLevel.title ?? "Untitled"),
+    subtitle: (d2.solicitationNumber as string) ?? null,
+    department: null,
+    agency: null,
+    office: null,
     type: typeStr,
-    status: d.isActive ? "Active" : "Inactive",
-    setAside:
-      (d.typeOfSetAsideDescription as string) ??
-      (d.typeOfSetAside as string) ??
-      null,
-    naicsCode: (d.naicsCode as string) ?? null,
+    status: statusStr,
+    setAside: setAsideCode && setAsideCode !== "NONE" ? setAsideCode : null,
+    naicsCode: naicsStr,
     description: description ? stripHtml(description) : null,
-    postedDate:
-      (d.postedDate as string) ?? (d.publishDate as string) ?? null,
-    closeDate:
-      (d.responseDate as string) ?? (d.responseDeadline as string) ?? null,
-    archiveDate: (d.archiveDate as string) ?? null,
+    postedDate: (topLevel.postedDate as string) ?? null,
+    closeDate: (deadlines?.response as string) ?? null,
+    archiveDate: (archive?.date as string) ?? null,
     estimatedValue: null,
     placeOfPerformance: placeStr,
     contactName: contact
@@ -187,16 +220,14 @@ function mapSamDetail(
       : null,
     contactEmail: (contact?.email as string) ?? null,
     contactPhone: (contact?.phone as string) ?? null,
-    externalUrl: d._id
-      ? `https://sam.gov/opp/${d._id}/view`
-      : null,
+    externalUrl: oppId ? `https://sam.gov/opp/${oppId}/view` : null,
     resources: mappedResources,
     awardInfo:
       awardee?.name
         ? {
             awardee: (awardee.name as string) ?? null,
             amount: null,
-            date: (d.awardDate as string) ?? null,
+            date: (topLevel.awardDate as string) ?? null,
           }
         : null,
   };
